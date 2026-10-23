@@ -1,0 +1,13 @@
+[
+  {
+    "number": 1842,
+    "title": "Unexpected timeout while loading repository metadata",
+    "state": "open",
+    "labels": ["bug", "triage"],
+    "body": "The metadata request intermittently takes more than 30 seconds. This issue includes a long reproduction log and should retain the identifier, state, and useful beginning and end of the report.",
+    "comments": [
+      { "author": "maintainer", "body": "We are investigating the request timeout." },
+      { "author": "reporter", "body": "The issue is easier to reproduce with a large repository." }
+    ]
+  }
+]

@@ -1,0 +1,57 @@
+{
+  "name": "tool-fit",
+  "version": "0.1.0",
+  "description": "Fit tool outputs into token budgets while preserving useful structure.",
+  "homepage": "https://github.com/codevasu1/tool-fit#readme",
+  "bugs": {
+    "url": "https://github.com/codevasu1/tool-fit/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codevasu1/tool-fit.git"
+  },
+  "license": "Apache-2.0",
+  "author": "vasudev mandal",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "llm",
+    "tool output",
+    "token budget",
+    "truncate json",
+    "context window",
+    "agents"
+  ],
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "fast-check": "^4.3.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "esbuild": "^0.28.2"
+  }
+}
