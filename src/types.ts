@@ -5,7 +5,9 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
-export type OmissionKind = "string" | "array" | "object";
+export type OmissionKind = "string" | "array" | "object" | "summary";
+
+export type ReportMode = "full" | "compact" | "none";
 
 export interface Omission {
   path: string;
@@ -20,6 +22,7 @@ export interface FitResult<T = unknown> {
   omitted: Omission[];
   tokens: number;
   truncated: boolean;
+  message: string;
 }
 
 export interface FitOptions {
@@ -28,6 +31,8 @@ export interface FitOptions {
   keep?: string | string[];
   weights?: Record<string, number>;
   marker?: "inline" | "sidecar";
+  report?: ReportMode;
+  maxReportTokens?: number;
   minItems?: number;
   minChars?: number;
   maxDepth?: number;

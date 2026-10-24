@@ -22,9 +22,16 @@ const result = fit(apiResponse, {
 
 console.log(result.value);   // Fitted value
 console.log(result.omitted); // JSON Pointer paths and omission counts
-console.log(result.tokens);  // Count of the serialized fitted value
+console.log(result.message); // Exactly what to send to the model
+console.log(result.tokens);  // countTokens(result.message), report included
 console.log(result.truncated);
 ```
+
+`maxTokens` budgets the **whole tool message**: the fitted value plus the
+omission report, as serialized in `result.message`. Send `result.message` to
+the agent and the count you measured is the count it costs. If nothing was
+omitted, `message` is just the compact JSON of the value; otherwise it is
+`{"value": …, "omitted": […]}`.
 
 If the serialized input already fits, `fit()` returns the original value by
 reference, with `truncated: false` and no omissions. Otherwise it normalizes
@@ -53,11 +60,145 @@ const result = fit(response, {
 // result.omitted reports removed array elements and nested string characters.
 ```
 
+## Use cases
+
+Each snippet below was run against the library. Exact counts depend on your
+`countTokens`, so the comments describe behavior rather than numbers.
+
+### 1. Long lists of records (GitHub issues, search results, SQL rows)
+
+Keep identifying fields intact, guarantee a few rows survive, and let the long
+text fields absorb the cuts.
+
+```ts
+const result = fit(issues, {
+  maxTokens: 700,
+  countTokens,
+  keep: ["number", "state"], // never shrunk
+  minItems: 3,               // always show at least 3 issues
+});
+// Head and tail issues survive, bodies are cut ("…[+469 chars]"),
+// and the array ends with "…[+43 items]".
+```
+
+### 2. Application logs and plain text
+
+Plain strings are cut on line boundaries: the first and last lines survive
+with a marker between them.
+
+```ts
+const result = fit(logText, { maxTokens: 300, countTokens, report: "none" });
+// "2026-01-01 INFO line 0\n…\n…[+7222 chars]…\n…last lines"
+```
+
+### 3. Scraped pages: favor the content that matters
+
+`weights` shifts budget between siblings. Here the page body gets four times
+the share of the link list. `report: "full"` returns exact paths.
+
+```ts
+const result = fit(page, {
+  maxTokens: 600,
+  countTokens,
+  weights: { html: 4, links: 1 },
+  report: "full",
+});
+// result.omitted:
+// [{ path: "/html",  kind: "string", kept: 294, dropped: 4706, total: 5000 },
+//  { path: "/links", kind: "array",  kept: 13,  dropped: 67,   total: 80 }]
+```
+
+### 4. Deeply nested configuration
+
+`maxDepth` collapses subtrees below a depth into one-line summaries, so the
+model still sees which keys exist.
+
+```ts
+const result = fit(config, { maxTokens: 150, countTokens, maxDepth: 2 });
+// {"value":{"a":{"b":"{…1 keys}"},"id":1}, "omitted":[…]}
+```
+
+### 5. Let the model ask for the rest with `slice()`
+
+Fit with exact paths, expose `slice()` as a second tool, and the model can
+fetch precisely the part it was missing.
+
+```ts
+const original = await runSearch(query);
+const result = fit(original, { maxTokens: 800, countTokens, report: "full" });
+// result.omitted contains e.g. { path: "/items", kind: "array", kept: 3, total: 1201, … }
+
+// Second tool the model can call:
+function readMore(pointer: string, offset: number, limit: number) {
+  return slice(original, pointer, { offset, limit });
+}
+readMore("/items", 3, 20); // items 3..22 of the original
+```
+
+Keep `original` (or re-run the tool) on your side; `slice()` addresses it with
+the same JSON Pointer paths that `omitted` reports. In the default `"compact"`
+mode, deep entries are folded into `summary` paths, so use `report: "full"`
+when the model needs exact paths to request.
+
+### 6. Wrap a tool once
+
+```ts
+const search = wrapTool(
+  async (query: string) => ({ query, results: await runSearch(query) }),
+  { maxTokens: 500, countTokens },
+);
+
+const { message, truncated, tokens } = await search("tool-fit");
+// Send `message` as the tool result. `tokens` is its exact cost.
+```
+
+### 7. Plug in a real tokenizer for a hard guarantee
+
+With the default estimator the budget is a close target. A real counter makes
+it a limit on the full message:
+
+```ts
+import { encodingForModel } from "js-tiktoken";
+
+const enc = encodingForModel("gpt-4o");
+const countTokens = (text: string) => enc.encode(text).length;
+
+const result = fit(toolResult, { maxTokens: 800, countTokens });
+// countTokens(result.message) <= 800, or fit() throws a RangeError.
+```
+
+### 8. Keep the data type-pure with sidecar markers
+
+`marker: "sidecar"` never inserts marker strings into arrays or objects, so
+downstream code can rely on the shape. Omissions are reported only in
+`omitted`, so keep `report` at `"compact"` or `"full"`. Give it a budget large
+enough for the data; at very small budgets whole arrays collapse to empty ones.
+
+```ts
+const result = fit(rows, { maxTokens: 400, countTokens, marker: "sidecar", report: "full" });
+// result.value.rows is still a plain array of rows; result.omitted says what was cut.
+```
+
+### 9. Handle budgets that are too small
+
+If the value and its minimal report cannot fit, `fit()` throws instead of
+silently overspending.
+
+```ts
+try {
+  const result = fit(hugeResult, { maxTokens: 5, countTokens });
+} catch (error) {
+  if (error instanceof RangeError) {
+    // Raise the budget, drop `keep` entries, or return a plain error message.
+  }
+}
+```
+
 ## API
 
 ### `fit(value, options)`
 
-Returns `{ value, omitted, tokens, truncated }`.
+Returns `{ value, omitted, tokens, truncated, message }`.
 
 | Option | Description |
 | --- | --- |
@@ -66,6 +207,8 @@ Returns `{ value, omitted, tokens, truncated }`.
 | `keep` | A JSON Pointer path, key name, or array of either. Matching values are not shrunk. |
 | `weights` | Map of JSON Pointer patterns or key names to positive allocation weights. `*` matches any characters; more specific patterns take precedence. |
 | `marker` | `"inline"` (default) inserts omission markers; `"sidecar"` leaves values type-pure and reports omissions only in `omitted`. |
+| `report` | `"compact"` (default) folds the report into ancestor `summary` entries until it fits `maxReportTokens`; `"full"` keeps every entry (and charges for it); `"none"` drops `omitted` (inline markers still show cuts; not allowed with `"sidecar"`). |
+| `maxReportTokens` | Token cap for the compact report. Defaults to a quarter of `maxTokens`. |
 | `minItems` | Minimum number of original array items to retain when the budget permits. |
 | `minChars` | Minimum number of Unicode code points to retain from a string when the budget permits. |
 | `maxDepth` | Collapse containers at or beyond this depth when they need shrinking. Root depth is zero. |
@@ -82,7 +225,12 @@ make a requested budget impossible.
 
 Paths use JSON Pointer escaping (`~` becomes `~0`, `/` becomes `~1`). String
 counts are Unicode code points; array and object counts are items and keys.
-For every report entry, `kept + dropped === total`.
+For every non-summary report entry, `kept + dropped === total`. A `summary`
+entry stands for several omissions folded beneath its path: `dropped` (and
+`total`) is the number of folded omissions and `kept` is 0. Use `report: "full"`
+when you need every exact path. With `report: "compact"` and inline markers, if
+even the smallest report cannot fit on the final attempt, the report is dropped
+and the inline markers alone describe the cuts.
 
 Inline markers are:
 

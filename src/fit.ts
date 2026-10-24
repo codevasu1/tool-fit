@@ -1,9 +1,10 @@
 import { allocate } from "./allocate.js";
 import { estimateTokens } from "./estimate.js";
 import { normalize } from "./normalize.js";
-import type { FitOptions, FitResult, JsonValue } from "./types.js";
+import { compactReport } from "./report.js";
+import type { FitOptions, FitResult, JsonValue, Omission } from "./types.js";
 
-const DEFAULT_MAX_ITERATIONS = 8;
+const DEFAULT_MAX_ITERATIONS = 12;
 
 export function fit<T>(input: T, options: FitOptions): FitResult<T> {
   validateOptions(options);
@@ -14,7 +15,7 @@ export function fit<T>(input: T, options: FitOptions): FitResult<T> {
   if (originalText !== undefined) {
     const tokens = checkedTokenCount(countTokens, originalText);
     if (tokens <= options.maxTokens) {
-      return { value: input, omitted: [], tokens, truncated: false };
+      return { value: input, omitted: [], tokens, truncated: false, message: originalText };
     }
   }
 
@@ -22,43 +23,53 @@ export function fit<T>(input: T, options: FitOptions): FitResult<T> {
   const keepPaths = normalizeKeep(options.keep);
   const marker = options.marker ?? "inline";
   const maxIterations = options.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+  const report = options.report ?? "compact";
+  const reportLimit = options.maxReportTokens ?? Math.floor(options.maxTokens / 4);
   let budget = options.maxTokens;
-  let last: ReturnType<typeof allocate> | undefined;
+  let lastTokens = 0;
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
-    last = allocate(normalized, budget, {
+    const allocation = allocate(normalized, budget, {
       ...options,
       countTokens,
       marker,
       keepPaths,
     });
-    const text = JSON.stringify(last.value);
-    const tokens = checkedTokenCount(countTokens, text);
-    if (tokens <= options.maxTokens) {
-      return {
-        value: last.value,
-        omitted: last.omitted,
-        tokens,
-        truncated: true,
-      };
+    const omitted =
+      report === "none"
+        ? []
+        : report === "full"
+          ? allocation.omitted
+          : compactReport(allocation.omitted, reportLimit, countTokens);
+    let message = buildMessage(allocation.value, omitted);
+    let tokens = countTokens(message);
+    let finalOmitted = omitted;
+    const lastAttempt = iteration === maxIterations - 1;
+    if (tokens > options.maxTokens && lastAttempt && report === "compact" && marker === "inline") {
+      const bare = JSON.stringify(allocation.value);
+      const bareTokens = countTokens(bare);
+      if (bareTokens <= options.maxTokens) {
+        message = bare;
+        tokens = bareTokens;
+        finalOmitted = [];
+      }
     }
-    budget = Math.max(0, Math.floor(budget * (options.maxTokens / tokens) * 0.95));
+    lastTokens = tokens;
+    if (tokens <= options.maxTokens) {
+      return { value: allocation.value, omitted: finalOmitted, tokens, truncated: true, message };
+    }
+    const scaled = Math.floor(budget * (options.maxTokens / tokens) * 0.95);
+    const reduced = budget - (tokens - options.maxTokens) - 1;
+    budget = Math.max(0, Math.min(scaled, reduced));
   }
 
-  const output = last ? JSON.stringify(last.value) : JSON.stringify(normalized);
-  const tokens = checkedTokenCount(countTokens, output);
-  if (tokens > options.maxTokens) {
-    throw new RangeError(
-      `Unable to fit output into ${options.maxTokens} tokens; the protected or irreducible value requires ${tokens}.`,
-    );
-  }
+  throw new RangeError(
+    `Unable to fit the tool message into ${options.maxTokens} tokens; the best attempt requires ${lastTokens}. Protected, irreducible, or report content may be too large.`,
+  );
+}
 
-  return {
-    value: last?.value ?? normalized,
-    omitted: last?.omitted ?? [],
-    tokens,
-    truncated: true,
-  };
+function buildMessage(value: JsonValue, omitted: Omission[]): string {
+  return JSON.stringify(omitted.length > 0 ? { value, omitted } : value);
 }
 
 function validateOptions(options: FitOptions): void {
@@ -84,6 +95,18 @@ function validateOptions(options: FitOptions): void {
   }
   if (options.marker !== undefined && !["inline", "sidecar"].includes(options.marker)) {
     throw new TypeError('marker must be either "inline" or "sidecar".');
+  }
+  if (options.report !== undefined && !["full", "compact", "none"].includes(options.report)) {
+    throw new TypeError('report must be "full", "compact", or "none".');
+  }
+  if (options.report === "none" && options.marker === "sidecar") {
+    throw new TypeError('report "none" cannot be combined with sidecar markers.');
+  }
+  if (
+    options.maxReportTokens !== undefined &&
+    (!Number.isInteger(options.maxReportTokens) || options.maxReportTokens < 0)
+  ) {
+    throw new TypeError("maxReportTokens must be a non-negative integer.");
   }
   if (
     options.keep !== undefined &&

@@ -11,5 +11,6 @@ export type {
   NormalizedValue,
   Omission,
   OmissionKind,
+  ReportMode,
   SliceOptions,
 } from "./types.js";
