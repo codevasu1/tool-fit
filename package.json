@@ -1,6 +1,6 @@
 {
   "name": "tool-fit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Fit tool outputs into token budgets while preserving useful structure.",
   "homepage": "https://github.com/codevasu1/tool-fit#readme",
   "bugs": {
